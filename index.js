@@ -15,7 +15,12 @@ const EFI_PIX_KEY = process.env.EFI_PIX_KEY || "";
    HTTPS mTLS Agent
 ========================= */
 function getHttpsAgent() {
+  if (!EFI_CERTIFICATE_BASE64) {
+    throw new Error("EFI_CERTIFICATE_BASE64 not configured");
+  }
+
   const pfx = Buffer.from(EFI_CERTIFICATE_BASE64, "base64");
+
   return new https.Agent({
     pfx,
     passphrase: "",
@@ -60,7 +65,10 @@ function makeRequest(options, body) {
 
     req.on("error", reject);
 
-    if (body) req.write(JSON.stringify(body));
+    if (body) {
+      req.write(JSON.stringify(body));
+    }
+
     req.end();
   });
 }
@@ -98,9 +106,9 @@ async function getEfiToken() {
 /* =========================
    Health Check
 ========================= */
-app.get("/", (req, res) =>
-  res.json({ status: "ok", service: "efi-mtls-proxy" })
-);
+app.get("/", (req, res) => {
+  res.json({ status: "ok", service: "efi-mtls-proxy" });
+});
 
 /* =========================
    CREATE PIX CHARGE (DEPOSIT)
@@ -109,8 +117,9 @@ app.post("/create-charge", authMiddleware, async (req, res) => {
   try {
     const { amount, txid, user_id } = req.body;
 
-    if (!amount || !txid)
+    if (!amount || !txid) {
       return res.status(400).json({ error: "Missing amount or txid" });
+    }
 
     const token = await getEfiToken();
     const agent = getHttpsAgent();
@@ -138,9 +147,10 @@ app.post("/create-charge", authMiddleware, async (req, res) => {
     );
 
     if (![200, 201].includes(chargeResponse.status)) {
-      return res
-        .status(chargeResponse.status)
-        .json({ error: "Charge failed", details: chargeResponse.data });
+      return res.status(chargeResponse.status).json({
+        error: "Charge failed",
+        details: chargeResponse.data
+      });
     }
 
     const charge = chargeResponse.data;
@@ -168,31 +178,48 @@ app.post("/create-charge", authMiddleware, async (req, res) => {
       qr_code_image: qrCodeImage,
       pix_copy_paste: charge.pixCopiaECola || qrCode
     });
+
   } catch (error) {
-    console.error(error);
+    console.error("CREATE CHARGE ERROR:", error);
     res.status(500).json({ error: error.message });
   }
 });
 
 /* =========================
-   SEND PIX (PAYOUT / SAQUE)
+   SEND PIX (SAQUE / PAYOUT)
 ========================= */
 app.post("/send-pix", authMiddleware, async (req, res) => {
   try {
     const { pix_key, amount } = req.body;
 
-    if (!pix_key || !amount)
+    if (!pix_key || !amount) {
       return res.status(400).json({ error: "Missing pix_key or amount" });
+    }
+
+    if (!EFI_PIX_KEY) {
+      return res.status(500).json({ error: "EFI_PIX_KEY not configured" });
+    }
 
     const token = await getEfiToken();
     const agent = getHttpsAgent();
-
     const idEnvio = `x1payout${Date.now()}`;
+
+    const body = {
+      valor: parseFloat(amount).toFixed(2),
+      pagador: {
+        chave: EFI_PIX_KEY
+      },
+      favorecido: {
+        chave: pix_key
+      }
+    };
+
+    console.log("ENVIANDO PARA EFI:", body);
 
     const payoutResponse = await makeRequest(
       {
         hostname: "pix.api.efipay.com.br",
-        path: `/v2/gn/pix/${idEnvio}`, // ✅ ENDPOINT CORRETO
+        path: `/v2/gn/pix/${idEnvio}`,
         method: "PUT",
         agent,
         headers: {
@@ -200,16 +227,12 @@ app.post("/send-pix", authMiddleware, async (req, res) => {
           "Content-Type": "application/json"
         }
       },
-      {
-        valor: parseFloat(amount).toFixed(2),
-        favorecido: {
-          chave: pix_key
-        }
-      }
+      body
     );
 
+    console.log("RESPOSTA EFI:", payoutResponse.data);
+
     if (![200, 201].includes(payoutResponse.status)) {
-      console.error("PAYOUT ERROR:", payoutResponse.data);
       return res.status(payoutResponse.status).json({
         error: "Payout failed",
         details: payoutResponse.data
@@ -222,8 +245,9 @@ app.post("/send-pix", authMiddleware, async (req, res) => {
       e2eid: payoutResponse.data.e2eId || null,
       data: payoutResponse.data
     });
+
   } catch (error) {
-    console.error(error);
+    console.error("SEND PIX ERROR:", error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -235,8 +259,9 @@ app.post("/register-webhook", authMiddleware, async (req, res) => {
   try {
     const { webhook_url } = req.body;
 
-    if (!webhook_url)
+    if (!webhook_url) {
       return res.status(400).json({ error: "Missing webhook_url" });
+    }
 
     const token = await getEfiToken();
 
@@ -256,14 +281,16 @@ app.post("/register-webhook", authMiddleware, async (req, res) => {
     );
 
     if (![200, 201].includes(response.status)) {
-      return res
-        .status(response.status)
-        .json({ error: "Webhook failed", details: response.data });
+      return res.status(response.status).json({
+        error: "Webhook failed",
+        details: response.data
+      });
     }
 
     res.json({ success: true, data: response.data });
+
   } catch (error) {
-    console.error(error);
+    console.error("WEBHOOK ERROR:", error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -280,12 +307,15 @@ app.get("/balance", authMiddleware, async (req, res) => {
       path: "/v2/gn/saldo",
       method: "GET",
       agent: getHttpsAgent(),
-      headers: { Authorization: `Bearer ${token}` }
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
     });
 
     res.json(response.data);
+
   } catch (error) {
-    console.error(error);
+    console.error("BALANCE ERROR:", error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -293,6 +323,6 @@ app.get("/balance", authMiddleware, async (req, res) => {
 /* =========================
    START SERVER
 ========================= */
-app.listen(PORT, () =>
-  console.log(`EFI mTLS Proxy running on port ${PORT}`)
-);
+app.listen(PORT, () => {
+  console.log(`EFI mTLS Proxy running on port ${PORT}`);
+});
